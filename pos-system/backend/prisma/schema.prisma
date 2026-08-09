@@ -1,0 +1,173 @@
+// Swap provider to "postgresql" and set DATABASE_URL for production.
+// SQLite is used here so the project runs anywhere with zero setup.
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  MANAGER
+  CASHIER
+}
+
+enum TaxCategory {
+  A // Exempt
+  B // 16% standard (example — verify current rates with KRA before going live)
+  C // Zero-rated
+  D // Non-VAT
+  E // 8% (example)
+}
+
+enum PaymentMethod {
+  MPESA
+  CARD
+  CASH
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
+enum InvoiceStatus {
+  QUEUED
+  SUBMITTED
+  ACCEPTED
+  REJECTED
+  FAILED
+}
+
+enum SaleStatus {
+  OPEN
+  AWAITING_PAYMENT
+  PAID
+  CANCELLED
+}
+
+model Business {
+  id          String   @id @default(uuid())
+  name        String
+  kraPin      String   // Business KRA PIN, required for eTIMS
+  branchId    String   @default("00")
+  vscuUnitId  String?  // Assigned after eTIMS device initialization
+  cmcKey      String?  // eTIMS control unit key — rotates, treat as secret
+  createdAt   DateTime @default(now())
+
+  branches Branch[]
+  products Product[]
+  users    User[]
+}
+
+model Branch {
+  id         String  @id @default(uuid())
+  business   Business @relation(fields: [businessId], references: [id])
+  businessId String
+  name       String
+  location   String?
+  createdAt  DateTime @default(now())
+
+  sales Sale[]
+  users User[]
+}
+
+model User {
+  id         String   @id @default(uuid())
+  business   Business @relation(fields: [businessId], references: [id])
+  businessId String
+  branch     Branch?  @relation(fields: [branchId], references: [id])
+  branchId   String?
+  name       String
+  email      String   @unique
+  password   String
+  role       Role     @default(CASHIER)
+  createdAt  DateTime @default(now())
+
+  sales Sale[]
+}
+
+model Product {
+  id          String      @id @default(uuid())
+  business    Business    @relation(fields: [businessId], references: [id])
+  businessId  String
+  name        String
+  sku         String
+  barcode     String?
+  unspscCode  String?     // Required by KRA for product registration
+  price       Float
+  taxCategory TaxCategory @default(B)
+  stockQty    Float       @default(0)
+  active      Boolean     @default(true)
+  createdAt   DateTime    @default(now())
+
+  saleItems SaleItem[]
+
+  @@unique([businessId, sku])
+}
+
+model Sale {
+  id          String     @id @default(uuid())
+  branch      Branch     @relation(fields: [branchId], references: [id])
+  branchId    String
+  cashier     User       @relation(fields: [cashierId], references: [id])
+  cashierId   String
+  status      SaleStatus @default(OPEN)
+  subtotal    Float      @default(0)
+  taxTotal    Float      @default(0)
+  total       Float      @default(0)
+  createdAt   DateTime   @default(now())
+  paidAt      DateTime?
+
+  items     SaleItem[]
+  payments  Payment[]
+  invoice   Invoice?
+}
+
+model SaleItem {
+  id          String      @id @default(uuid())
+  sale        Sale        @relation(fields: [saleId], references: [id])
+  saleId      String
+  product     Product     @relation(fields: [productId], references: [id])
+  productId   String
+  name        String      // snapshot at time of sale
+  qty         Float
+  unitPrice   Float
+  taxCategory TaxCategory
+  taxAmount   Float
+  lineTotal   Float
+}
+
+model Payment {
+  id            String        @id @default(uuid())
+  sale          Sale          @relation(fields: [saleId], references: [id])
+  saleId        String
+  method        PaymentMethod
+  amount        Float
+  status        PaymentStatus @default(PENDING)
+  mpesaCheckoutRequestId String?
+  mpesaReceiptNumber     String?
+  rawCallback   String?       // JSON string of the provider callback for audit
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+}
+
+// One eTIMS invoice per completed sale.
+model Invoice {
+  id              String        @id @default(uuid())
+  sale            Sale          @relation(fields: [saleId], references: [id])
+  saleId          String        @unique
+  status          InvoiceStatus @default(QUEUED)
+  invoiceNumber   Int?          // Sequential integer required by KRA, not a string prefix
+  kraInvoiceNo    String?       // Returned by eTIMS on success
+  qrCodeUrl       String?
+  signature       String?
+  submittedAt     DateTime?
+  lastError       String?
+  attempts        Int           @default(0)
+  createdAt       DateTime      @default(now())
+}
